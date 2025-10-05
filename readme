@@ -1,0 +1,19 @@
+Autor: Kacper Ruta s28866
+
+# 1) test TF (CPU)
+python -c "import tensorflow as tf; print(tf.reduce_sum(tf.random.normal([1000,1000])))"
+
+# 2) trening MNIST + zapis modelu i wykresu
+python mnist_cli.py train --epochs 5 --batch-size 128 --lr 0.001 --plot
+
+# 3) wygeneruj przykładowy obrazek MNIST (img.png)
+python -c "from tensorflow.keras.datasets import mnist; from PIL import Image; (_, _),(xt, yt)=mnist.load_data(); Image.fromarray(xt[0]).save('img.png'); print('img.png -> cyfra:', int(yt[0]))"
+
+# 4) predykcja z obrazu z użyciem zapisanego modelu
+python mnist_cli.py predict --model mnist_model.keras img.png
+
+# 5) trening na CSV (Iris – etykieta 'Species')
+python mnist_cli.py train-csv date_set.csv --label Species --epochs 20 --batch-size 128 --lr 0.001
+
+# 6) formatowanie kodu
+python -m black mnist_cli.py
