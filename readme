@@ -17,3 +17,6 @@ python mnist_cli.py train-csv date_set.csv --label Species --epochs 20 --batch-s
 
 # 6) formatowanie kodu
 python -m black mnist_cli.py
+
+
+test commit
