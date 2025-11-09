@@ -1,0 +1,13 @@
+Klasyfikacja win (UCI Wine)
+
+Celem było nauczenie prostego modelu, który na podstawie 13 liczb opisujących wino potrafi wskazać jego klasę: 1, 2 albo 3.
+
+Dane wziąłem ze zbioru UCI Wine. Jest tam 178 przykładów, każdy ma 13 cech liczbowych i przypisaną klasę. Plik jest surowy, więc po wczytaniu nadałem kolumnom nazwy. Na początku przetasowałem wiersze, żeby nie uczyć się na sztucznej kolejności. Potem podzieliłem dane na trening i test w proporcji 80 do 20, tak żeby w obu częściach były podobne proporcje klas. Kolejny krok to standaryzacja, czyli ujednolicenie skali cech: policzyłem średnią i odchylenie tylko na zbiorze treningowym i tymi wartościami przeskalowałem zarówno trening, jak i test. Etykiety klas zamieniłem na postać one-hot, bo na wyjściu sieci używam softmaxu, który zwraca trzy prawdopodobieństwa.
+
+Zbudowałem dwa bardzo proste modele typu MLP (Sequential). Pierwszy, nazwijmy go Model A, ma jedną warstwę ukrytą z 32 neuronami i aktywacją ReLU oraz wyjście z trzema neuronami i softmaxem. Drugi, Model B, jest trochę głębszy: dwie warstwy ukryte 64 i 32 neurony z aktywacją tanh, a na końcu też softmax. Oba uczyłem klasycznym SGD, w A z trochę większym krokiem uczenia, w B z mniejszym, bo tanh bywa wrażliwszy. Jako funkcję celu użyłem categorical cross-entropy, bo to standard przy one-hocie i wzajemnie wykluczających się klasach.
+
+Podczas treningu zapisałem przebiegi metryk i narysowałem wykresy. Widać, że loss spada, a accuracy rośnie i stabilizuje się, co oznacza, że modele rzeczywiście się uczą i nie ma mocnego przeuczenia. Na zbiorze testowym Model A osiągnął dokładność około 0,889, a Model B około 0,944. Lepszy wyszedł więc Model B. Najpewniej pomaga mu dodatkowa warstwa i nieliniowość tanh, które lepiej dopasowały granice między klasami w tych danych. Z drugiej strony Model A jest prostszy i też daje dobry wynik, więc na małych, czystych zbiorach często wcale nie trzeba rozbudowanych sieci.
+
+Gotowy model można wykorzystać z linii poleceń. Najpierw trenujemy: python main.py train --csv Data/wine/wine.data --epochs 200 --batch 16 --outdir artifacts. Potem do predykcji podajemy 13 cech i dostajemy liczbę 1, 2 lub 3, na przykład: python main.py predict --model_dir artifacts/models --alcohol 13.2 … --proline 1050. W katalogu artifacts znajdują się zapisany najlepszy model, parametry użytej standaryzacji, wykresy krzywych uczenia i krótkie podsumowanie z liczbami.
+
+Podsumowując: poprawne przygotowanie danych (tasowanie, stratyfikowany podział, standaryzacja) i dopasowanie prostej sieci z softmaxem i entropią krzyżową wystarczyły, żeby osiągnąć dobrą dokładność na tym klasycznym zbiorze. Model B okazał się najlepszy, ale Model A również jest solidny i szybszy.
