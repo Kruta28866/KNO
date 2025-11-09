@@ -1,1 +1,0 @@
-## Author : Kacper Ruta, Index: s28866
