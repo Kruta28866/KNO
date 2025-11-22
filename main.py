@@ -1,21 +1,37 @@
-import argparse, json, numpy as np, pandas as pd, matplotlib.pyplot as plt, tensorflow as tf
+import argparse
+import json
+import os
+
+import numpy as np
+import pandas as pd
+import matplotlib.pyplot as plt
+import tensorflow as tf
 from sklearn.model_selection import train_test_split
-from sklearn.preprocessing import StandardScaler
+from sklearn.metrics import confusion_matrix
+import keras_tuner as kt
 
-RNG = 42
-COLS = ["class","alcohol","malic_acid","ash","alcalinity_of_ash","magnesium",
-        "total_phenols","flavanoids","nonflavanoid_phenols","proanthocyanins",
-        "color_intensity","hue","od280_od315_of_diluted_wines","proline"]
+RNG = 42  # stałe ziarno losowe, żeby wyniki były powtarzalne
 
+# nazwy kolumn, w takiej kolejności jak w pliku wine.data
+COLS = [
+    "class", "alcohol", "malic_acid", "ash", "alcalinity_of_ash", "magnesium",
+    "total_phenols", "flavanoids", "nonflavanoid_phenols", "proanthocyanins",
+    "color_intensity", "hue", "od280_od315_of_diluted_wines", "proline"
+]
+
+# parser do obsługi dwóch komend: train i predict
 parser = argparse.ArgumentParser()
 sub = parser.add_subparsers(dest="cmd", required=True)
 
+# trenowanie + tuning
 p_train = sub.add_parser("train")
-p_train.add_argument("--csv", required=True)             # np. Data/wine/wine.data
-p_train.add_argument("--outdir", default="artifacts")    # gdzie zapisywać
-p_train.add_argument("--epochs", type=int, default=200)
+p_train.add_argument("--csv", required=True)          # ścieżka do wine.data
+p_train.add_argument("--outdir", default="artifacts") # gdzie zapisywać wyniki
+p_train.add_argument("--epochs", type=int, default=30)
 p_train.add_argument("--batch", type=int, default=16)
+p_train.add_argument("--max_trials", type=int, default=10)
 
+# pojedyncza predykcja
 p_pred = sub.add_parser("predict")
 p_pred.add_argument("--model_dir", default="artifacts/models")
 for f in COLS[1:]:
@@ -23,80 +39,182 @@ for f in COLS[1:]:
 
 args = parser.parse_args()
 
-if args.cmd == "train":
-    # 1) wczytanie + nadanie nagłówków + tasowanie
-    df = pd.read_csv(args.csv, header=None); df.columns = COLS
+
+def load_data(csv_path):
+    """Wczytanie wine.data do DataFrame i przetasowanie wierszy."""
+    df = pd.read_csv(csv_path, header=None)
+    df.columns = COLS
     df = df.sample(frac=1.0, random_state=RNG).reset_index(drop=True)
+    return df
 
-    # 2) cechy/etykiety
+
+def prepare_data(df):
+    """Podział na X/y, one-hot i train/val (80/20)."""
     X = df.drop(columns=["class"]).to_numpy(np.float32)
-    y = df["class"].to_numpy(np.int32)                   # 1..3
-    y_oh = tf.keras.utils.to_categorical(y-1, num_classes=3)  # one-hot
+    y = df["class"].to_numpy(np.int32)
+    y_oh = tf.keras.utils.to_categorical(y - 1, num_classes=3)
 
-    # 3) podział + standaryzacja (fit na train)
-    X_tr, X_te, y_tr, y_te, ytr_oh, yte_oh = train_test_split(
+    X_tr, X_val, y_tr, y_val, ytr_oh, yval_oh = train_test_split(
         X, y, y_oh, test_size=0.2, stratify=y, random_state=RNG
     )
-    scaler = StandardScaler().fit(X_tr)
-    X_tr = scaler.transform(X_tr); X_te = scaler.transform(X_te)
+    return X_tr, X_val, y_tr, y_val, ytr_oh, yval_oh
 
-    # 4) dwa modele
-    modelA = tf.keras.Sequential([
-        tf.keras.layers.Input((13,)),
-        tf.keras.layers.Dense(32, activation="relu", kernel_initializer="he_normal"),
-        tf.keras.layers.Dense(3, activation="softmax")
-    ], name="A")
-    modelA.compile(optimizer=tf.keras.optimizers.SGD(0.01, momentum=0.9),
-                   loss="categorical_crossentropy", metrics=["accuracy"])
 
-    modelB = tf.keras.Sequential([
-        tf.keras.layers.Input((13,)),
-        tf.keras.layers.Dense(64, activation="tanh"),
-        tf.keras.layers.Dense(32, activation="tanh"),
-        tf.keras.layers.Dense(3, activation="softmax")
-    ], name="B")
-    modelB.compile(optimizer=tf.keras.optimizers.SGD(0.005, momentum=0.9),
-                   loss="categorical_crossentropy", metrics=["accuracy"])
+def make_model(input_shape, normalizer,
+               units1=32, units2=32,
+               learning_rate=0.01,
+               activation="relu"):
+    """Buduje i kompiluje model dla zadanych parametrów."""
+    inputs = tf.keras.Input(shape=input_shape)
+    x = normalizer(inputs)  # normalizacja jako pierwsza warstwa
 
-    # 5) uczenie + wykresy
-    hA = modelA.fit(X_tr, ytr_oh, validation_data=(X_te, yte_oh),
-                    epochs=args.epochs, batch_size=args.batch, verbose=0)
-    hB = modelB.fit(X_tr, ytr_oh, validation_data=(X_te, yte_oh),
-                    epochs=args.epochs, batch_size=max(8, args.batch//2), verbose=0)
+    x = tf.keras.layers.Dense(
+        units1,
+        activation=activation,
+        kernel_initializer="he_normal"
+    )(x)
 
-    import os, json as _json
-    os.makedirs(f"{args.outdir}/plots", exist_ok=True)
-    os.makedirs(f"{args.outdir}/models", exist_ok=True)
+    x = tf.keras.layers.Dense(
+        units2,
+        activation=activation,
+        kernel_initializer="he_normal"
+    )(x)
 
-    for name, h in [("modelA", hA), ("modelB", hB)]:
-        e = range(1, len(h.history["loss"])+1)
-        plt.figure(); plt.plot(e, h.history["loss"], label="loss"); plt.plot(e, h.history["val_loss"], label="val_loss")
-        plt.xlabel("epoch"); plt.ylabel("loss"); plt.legend(); plt.tight_layout()
-        plt.savefig(f"{args.outdir}/plots/{name}_loss.png"); plt.close()
-        plt.figure(); plt.plot(e, h.history["accuracy"], label="train_acc"); plt.plot(e, h.history["val_accuracy"], label="val_acc")
-        plt.xlabel("epoch"); plt.ylabel("acc"); plt.legend(); plt.tight_layout()
-        plt.savefig(f"{args.outdir}/plots/{name}_acc.png"); plt.close()
+    outputs = tf.keras.layers.Dense(3, activation="softmax")(x)
 
-    # 6) test accuracy + wybór najlepszego + zapis
-    _, accA = modelA.evaluate(X_te, yte_oh, verbose=0)
-    _, accB = modelB.evaluate(X_te, yte_oh, verbose=0)
-    best, best_model = ("A", modelA) if accA >= accB else ("B", modelB)
+    model = tf.keras.Model(inputs=inputs, outputs=outputs)
 
-    best_model.save(f"{args.outdir}/models/best_model.keras")
-    with open(f"{args.outdir}/models/scaler.json","w") as f:
-        _json.dump({"mean": scaler.mean_.tolist(), "scale": scaler.scale_.tolist()}, f, indent=2)
-    with open(f"{args.outdir}/training_summary.json","w") as f:
-        _json.dump({"epochs": args.epochs, "batch": args.batch,
-                    "A_test_acc": float(accA), "B_test_acc": float(accB),
-                    "best": best}, f, indent=2)
-    print(f"OK. Test acc: A={accA:.4f}, B={accB:.4f}. Best={best}. Artefakty w {args.outdir}/")
+    opt = tf.keras.optimizers.SGD(
+        learning_rate=learning_rate,
+        momentum=0.9
+    )
+    model.compile(
+        optimizer=opt,
+        loss="categorical_crossentropy",
+        metrics=["accuracy"]
+    )
+    return model
+
+
+def build_model_hp(hp, input_shape, normalizer):
+    """
+    Wersja make_model używana przez Keras Tuner.
+    hp dostarcza wartości hiperparametrów.
+    """
+    units1 = hp.Int("units1", 16, 128, step=16)
+    units2 = hp.Int("units2", 16, 128, step=16)
+    lr = hp.Choice("learning_rate", [1e-4, 5e-4, 1e-3, 5e-3, 1e-2])
+    activation = hp.Choice("activation", ["relu", "tanh"])
+    return make_model(input_shape, normalizer, units1, units2, lr, activation)
+
+
+if args.cmd == "train":
+    # 1) dane
+    df = load_data(args.csv)
+    X_tr, X_val, y_tr, y_val, ytr_oh, yval_oh = prepare_data(df)
+    input_shape = (X_tr.shape[1],)  # u nas (13,)
+
+    # 2) normalizacja w Kerasie
+    normalizer = tf.keras.layers.Normalization()
+    normalizer.adapt(X_tr)
+
+    # 3) katalogi na wyniki
+    os.makedirs(args.outdir + "/plots", exist_ok=True)
+    os.makedirs(args.outdir + "/models", exist_ok=True)
+
+    # 4) model bazowy (baseline) – stałe parametry
+    baseline_model = make_model(
+        input_shape, normalizer,
+        units1=32,
+        units2=32,
+        learning_rate=0.01,
+        activation="relu"
+    )
+
+    hist = baseline_model.fit(
+        X_tr, ytr_oh,
+        validation_data=(X_val, yval_oh),
+        epochs=args.epochs,
+        batch_size=args.batch,
+        verbose=0
+    )
+
+    # wykresy dla baseline
+    epochs_list = range(1, len(hist.history["loss"]) + 1)
+
+    plt.figure()
+    plt.plot(epochs_list, hist.history["loss"], label="loss")
+    plt.plot(epochs_list, hist.history["val_loss"], label="val_loss")
+    plt.legend()
+    plt.savefig(args.outdir + "/plots/baseline_loss.png")
+    plt.close()
+
+    plt.figure()
+    plt.plot(epochs_list, hist.history["accuracy"], label="train_acc")
+    plt.plot(epochs_list, hist.history["val_accuracy"], label="val_acc")
+    plt.legend()
+    plt.savefig(args.outdir + "/plots/baseline_acc.png")
+    plt.close()
+
+    _, baseline_acc = baseline_model.evaluate(X_val, yval_oh, verbose=0)
+    baseline_model.save(args.outdir + "/models/baseline_model.keras")
+
+    # 5) Keras Tuner – RandomSearch
+    def tuner_builder(hp):
+        return build_model_hp(hp, input_shape, normalizer)
+
+    tuner = kt.RandomSearch(
+        tuner_builder,
+        objective="val_accuracy",
+        max_trials=args.max_trials,
+        directory=args.outdir,
+        project_name="tuner_wine"
+    )
+
+    tuner.search(
+        X_tr, ytr_oh,
+        validation_data=(X_val, yval_oh),
+        epochs=args.epochs,
+        batch_size=args.batch,
+        verbose=0
+    )
+
+    best_hp = tuner.get_best_hyperparameters(1)[0]
+    best_model = tuner.get_best_models(1)[0]
+
+    _, tuned_acc = best_model.evaluate(X_val, yval_oh, verbose=0)
+
+    # 6) macierz pomyłek dla najlepszego modelu
+    preds = best_model.predict(X_val, verbose=0)
+    preds = np.argmax(preds, axis=1)
+    true = y_val - 1
+    cm = confusion_matrix(true, preds)
+
+    # zapis najlepszego modelu
+    best_model.save(args.outdir + "/models/best_model.keras")
+
+    print("Najlepszy model:")
+    best_model.summary()
+
+    # 7) zapis metryk do raportu
+    summary = {
+        "baseline_val_acc": float(baseline_acc),
+        "tuned_val_acc": float(tuned_acc),
+        "best_hyperparameters": best_hp.values,
+        "confusion_matrix": cm.tolist()
+    }
+
+    with open(args.outdir + "/training_summary.json", "w") as f:
+        json.dump(summary, f, indent=2)
+
+    print("Baseline acc:", baseline_acc)
+    print("Tuned acc:", tuned_acc)
+    print("Najlepsze hiperparametry:", best_hp.values)
+
 
 elif args.cmd == "predict":
-    # 7) predykcja: wczytaj model i scaler, przyjmij 13 cech, zwróć klasę 1..3
-    model = tf.keras.models.load_model(f"{args.model_dir}/best_model.keras")
-    with open(f"{args.model_dir}/scaler.json") as f:
-        sc = json.load(f)
+    # predykcja jednego przykładu z linii komend
+    model = tf.keras.models.load_model(args.model_dir + "/best_model.keras")
     x = np.array([[getattr(args, c) for c in COLS[1:]]], dtype=np.float32)
-    x = (x - np.array(sc["mean"], np.float32)) / np.array(sc["scale"], np.float32)
     p = model.predict(x, verbose=0)[0]
     print(int(np.argmax(p)) + 1)
