@@ -1,0 +1,13 @@
+# data
+*.csv
+
+# artifacts/models
+artifacts*/
+*.keras
+*.joblib
+*.png
+
+# python
+__pycache__/
+*.pyc
+.venv/
